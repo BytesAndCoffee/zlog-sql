@@ -425,26 +425,12 @@ class zlog_sql(znc.Module):
         if args.strip() == '':
             raise Exception('Missing argument. Provide connection string as an argument.')
 
-        match = re.search('^\s*sqlite(?:://(.+))?\s*$', args)
-        if match:
-            if match.group(1) is None:
-                return SQLiteDatabase({'database': os.path.join(self.GetSavePath(), 'logs.sqlite')})
-            else:
-                return SQLiteDatabase({'database': match.group(1)})
-
         match = re.search('^\s*mysql://(.+?):(.+?)@(.+?)/(.+)\s*$', args)
         if match:
             return MySQLDatabase({'host': match.group(3),
                                   'user': match.group(1),
                                   'passwd': match.group(2),
                                   'db': match.group(4)})
-
-        match = re.search('^\s*postgres://(.+?):(.+?)@(.+?)/(.+)\s*$', args)
-        if match:
-            return PostgresDatabase({'host': match.group(3),
-                                     'user': match.group(1),
-                                     'password': match.group(2),
-                                     'database': match.group(4)})
 
         raise Exception('Unrecognized connection string. Check the documentation.')
 
@@ -517,39 +503,6 @@ class Database:
         self.conn = None
 
 
-class PostgresDatabase(Database):
-    def connect(self) -> None:
-        import psycopg2
-        self.conn = psycopg2.connect(**self.dsn)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            self.conn.cursor().execute('''
-CREATE TABLE IF NOT EXISTS logs (
-  "id" BIGSERIAL NOT NULL,
-  "created_at" TIMESTAMP WITH TIME ZONE NOT NULL,
-  "user" VARCHAR(128) DEFAULT NULL,
-  "network" VARCHAR(128) DEFAULT NULL,
-  "window" VARCHAR(255) NOT NULL,
-  "type"  VARCHAR(32) NOT NULL,
-  "nick"  VARCHAR(128) NULL,
-  "message" TEXT,
-  PRIMARY KEY (id)
-);
-''')
-        self.conn.commit()
-
-    def ensure_connected(self):
-        if self.conn.status == 0:
-            self.connect()
-
-    def insert_into(self, table, row):
-        cols = ', '.join('"{}"'.format(col) for col in row.keys())
-        vals = ', '.join('%({})s'.format(col) for col in row.keys())
-        sql = 'INSERT INTO {} ({}) VALUES ({})'.format(table, cols, vals)
-        self.conn.cursor().execute(sql, row)
-        self.conn.commit()
-
-
 class MySQLDatabase(Database):
     def connect(self) -> None:
         import pymysql
@@ -558,18 +511,14 @@ class MySQLDatabase(Database):
             warnings.simplefilter('ignore')
             self.conn.cursor().execute('''
 CREATE TABLE IF NOT EXISTS `logs` (
-  `id` INT(11) NOT NULL AUTO_INCREMENT,
-  `created_at` DATETIME NOT NULL,
-  `user` VARCHAR(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `network` VARCHAR(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+   `id` INT(11) NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  `created_at` DATETIME NOT NULL KEY,
+  `user` VARCHAR(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL KEY,
+  `network` VARCHAR(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL KEY,
   `window` VARCHAR(255) COLLATE utf8mb4_unicode_ci NOT NULL,
   `type`  VARCHAR(32) COLLATE utf8mb4_unicode_ci NOT NULL,
   `nick`  VARCHAR(128) COLLATE utf8mb4_unicode_ci NULL,
-  `message` TEXT COLLATE utf8mb4_unicode_ci,
-  PRIMARY KEY (`id`),
-  KEY `created_at` (`created_at`),
-  KEY `user` (`user`),
-  KEY `network` (`network`)
+  `message` TEXT COLLATE utf8mb4_unicode_ci
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=COMPRESSED;
 ''')
         self.conn.commit()
@@ -582,33 +531,5 @@ CREATE TABLE IF NOT EXISTS `logs` (
         cols = ', '.join('`{}`'.format(col) for col in row.keys())
         vals = ', '.join('%({})s'.format(col) for col in row.keys())
         sql = 'INSERT INTO `{}` ({}) VALUES ({})'.format(table, cols, vals)
-        self.conn.cursor().execute(sql, row)
-        self.conn.commit()
-
-
-class SQLiteDatabase(Database):
-    def connect(self) -> None:
-        import sqlite3
-        self.conn = sqlite3.connect(**self.dsn)
-        self.conn.cursor().execute('''
-CREATE TABLE IF NOT EXISTS [logs](
-    [id] INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, 
-    [created_at] DATETIME NOT NULL, 
-    [user] VARCHAR, 
-    [network] VARCHAR, 
-    [window] VARCHAR, 
-    [type] VARCHAR NOT NULL, 
-    [nick] VARCHAR, 
-    [message] TEXT);
-''')
-        self.conn.commit()
-
-    def ensure_connected(self):
-        pass
-
-    def insert_into(self, table: str, row: dict) -> None:
-        cols = ', '.join('[{}]'.format(col) for col in row.keys())
-        vals = ', '.join(':{}'.format(col) for col in row.keys())
-        sql = 'INSERT INTO [{}] ({}) VALUES ({})'.format(table, cols, vals)
         self.conn.cursor().execute(sql, row)
         self.conn.commit()
