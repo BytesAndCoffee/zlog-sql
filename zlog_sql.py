@@ -8,24 +8,24 @@ import traceback
 import warnings
 from datetime import datetime
 from time import sleep
-
 import znc
 
 
 class zlog_sql(znc.Module):
-    description = 'Logs all channels to a MySQL/SQLite database.'
+    description = 'Logs all channels to a MySQL database.'
     module_types = [znc.CModInfo.GlobalModule]
 
     wiki_page = 'ZLog_SQL'
 
     has_args = True
-    args_help_text = ('Connection string in format: mysql://user:pass@host/database_name'
-                      ' or postgres://user:pass@host/database_name'
-                      ' or sqlite://path/to/db.sqlite')
+    args_help_text = 'Connection string in format: mysql://user:pass@host/database_name'
 
     log_queue = multiprocessing.SimpleQueue()
+    reply_queue = multiprocessing.SimpleQueue()
     internal_log = None
     hook_debugging = False
+
+
 
     def OnLoad(self, args, message):
         """
@@ -37,13 +37,20 @@ class zlog_sql(znc.Module):
         :param message: A message that may be displayed to the user after loading the module.
         :return: True if the module loaded successfully, else False.
         """
+        self.lookup = dict()
+        self.types = {'msg': 'PRIVMSG', 'action': 'ACTION'}
         self.internal_log = InternalLog(self.GetSavePath())
         self.debug_hook()
 
         try:
             db = self.parse_args(args)
             multiprocessing.Process(target=DatabaseThread.worker_safe,
-                                    args=(db, self.log_queue, self.internal_log)).start()
+                                    args=(
+                                        db,
+                                        self.log_queue,
+                                        self.reply_queue,
+                                        self.internal_log
+                                    )).start()
             return True
         except Exception as e:
             message.s = str(e)
@@ -55,7 +62,7 @@ class zlog_sql(znc.Module):
 
             return False
 
-    def __del__(self):
+    def OnShutdown(self):
         # Terminate worker process.
         self.log_queue.put(None)
 
@@ -383,6 +390,37 @@ class zlog_sql(znc.Module):
     # LOGGING
     # =======
 
+    def put_irc(self, user, network, window, mtype, target, message):
+        with self.internal_log.error() as log:
+            query = None
+            log.write('Writing to IRC...\n')
+            if self.lookup[user, network]:
+                log.write('Looking up object for {}\n'.format(str((user, network))))
+                query = self.lookup[(user, network)]
+                log.write('Found! {}\n'.format(str(query)))
+            else:
+                log.write('Locating user {} and network {}\n'.format(user, network))
+                query = znc.CZNC.Get().FindUser(user)
+                if query is not None:
+                    log.write('User {} found, locating network {}\n'.format(user, network))
+                    query = query.FindNetwork(network)
+                    if query is not None:
+                        log.write('Lookup complete! located user {} and network {}. Storing in cache\n'.format(user, network))
+                        self.lookup[user, network] = query
+                    else:
+                        log.write('Lookup failed, user {} found but network {} not found\n'.format(user, network))
+                else:
+                    log.write('Lookup failed, user {} not found\n'.format(user))
+            if query is not None:
+                log.write('Sending line...\n')
+                if window == target:
+                    line = '{} {} :{}'.format(self.types[mtype], window, message)
+                else:
+                    line = '{} {} :{}: {}'.format(self.types[mtype], window, target, message)
+                log.write(str(query) + '\n')
+                log.write('[{}]\n'.format(line))
+                query.PutIRC(line)
+
     def put_log(self, mtype, line, window="Status", nick=None):
         """
         Adds the log line to database write queue.
@@ -395,6 +433,12 @@ class zlog_sql(znc.Module):
             'type': mtype,
             'nick': nick,
             'message': line.encode('utf8', 'replace').decode('utf8')})
+        if not self.reply_queue.empty():
+            line = self.reply_queue.get()
+            with self.internal_log.error() as target:
+                target.write('* {} *\n'.format(list(line)))
+            self.put_irc(line[1], line[2], line[3], line[4], line[5], line[6])
+
 
     # DEBUGGING HOOKS
     # ===============
@@ -437,9 +481,14 @@ class zlog_sql(znc.Module):
 
 class DatabaseThread:
     @staticmethod
-    def worker_safe(db, log_queue: multiprocessing.SimpleQueue, internal_log) -> None:
+    def worker_safe(
+            db,
+            log_queue: multiprocessing.SimpleQueue,
+            inbound_queue: multiprocessing.SimpleQueue,
+            internal_log
+    ) -> None:
         try:
-            DatabaseThread.worker(db, log_queue, internal_log)
+            DatabaseThread.worker(db, log_queue, inbound_queue, internal_log)
         except Exception as e:
             with internal_log.error() as target:
                 target.write('Unrecoverable exception in worker thread: {0} {1}\n'.format(type(e), str(e)))
@@ -448,7 +497,12 @@ class DatabaseThread:
             raise
 
     @staticmethod
-    def worker(db, log_queue: multiprocessing.SimpleQueue, internal_log) -> None:
+    def worker(
+            db,
+            log_queue: multiprocessing.SimpleQueue,
+            inbound_queue: multiprocessing.SimpleQueue,
+            internal_log
+    ) -> None:
         db.connect()
 
         while True:
@@ -458,7 +512,15 @@ class DatabaseThread:
 
             try:
                 db.ensure_connected()
-                db.insert_into('logs', item)
+                db.insert_into(item, 'logs')
+                res = db.fetch_from()
+                with internal_log.error() as target:
+                    target.write('== ' + str(res) + ' ==\n')
+                    if res:
+                        for line in res:
+                            target.write(str(line) + '\n')
+                            inbound_queue.put(line)
+                            db.del_from(line[0])
             except Exception as e:
                 sleep_for = 10
 
@@ -507,29 +569,26 @@ class MySQLDatabase(Database):
     def connect(self) -> None:
         import pymysql
         self.conn = pymysql.connect(use_unicode=True, charset='utf8mb4', **self.dsn)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            self.conn.cursor().execute('''
-CREATE TABLE IF NOT EXISTS `logs` (
-   `id` INT(11) NOT NULL PRIMARY KEY AUTO_INCREMENT,
-  `created_at` DATETIME NOT NULL KEY,
-  `user` VARCHAR(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL KEY,
-  `network` VARCHAR(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL KEY,
-  `window` VARCHAR(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `type`  VARCHAR(32) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `nick`  VARCHAR(128) COLLATE utf8mb4_unicode_ci NULL,
-  `message` TEXT COLLATE utf8mb4_unicode_ci
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=COMPRESSED;
-''')
-        self.conn.commit()
 
     def ensure_connected(self):
         if self.conn.open is False:
             self.connect()
 
-    def insert_into(self, table, row):
+    def insert_into(self, row, table="logs"):
         cols = ', '.join('`{}`'.format(col) for col in row.keys())
         vals = ', '.join('%({})s'.format(col) for col in row.keys())
         sql = 'INSERT INTO `{}` ({}) VALUES ({})'.format(table, cols, vals)
         self.conn.cursor().execute(sql, row)
+        self.conn.commit()
+
+    def fetch_from(self):
+        sql = 'SELECT * FROM inbound'
+        cur = self.conn.cursor()
+        cur.execute(sql)
+        res = cur.fetchall()
+        return res
+
+    def del_from(self, iden):
+        sql = 'DELETE FROM inbound WHERE id = {}'.format(iden)
+        self.conn.cursor().execute(sql)
         self.conn.commit()
