@@ -5,7 +5,6 @@ import os
 import pprint
 import re
 import traceback
-import warnings
 from datetime import datetime
 from time import sleep
 import znc
@@ -392,34 +391,15 @@ class zlog_sql(znc.Module):
 
     def put_irc(self, user, network, window, mtype, target, message):
         with self.internal_log.error() as log:
-            query = None
-            log.write('Writing to IRC...\n')
-            if self.lookup[user, network]:
-                log.write('Looking up object for {}\n'.format(str((user, network))))
-                query = self.lookup[(user, network)]
-                log.write('Found! {}\n'.format(str(query)))
-            else:
-                log.write('Locating user {} and network {}\n'.format(user, network))
-                query = znc.CZNC.Get().FindUser(user)
-                if query is not None:
-                    log.write('User {} found, locating network {}\n'.format(user, network))
-                    query = query.FindNetwork(network)
-                    if query is not None:
-                        log.write('Lookup complete! located user {} and network {}. Storing in cache\n'.format(user, network))
-                        self.lookup[user, network] = query
-                    else:
-                        log.write('Lookup failed, user {} found but network {} not found\n'.format(user, network))
-                else:
-                    log.write('Lookup failed, user {} not found\n'.format(user))
+            query = znc.CZNC.Get().FindUser(user)
             if query is not None:
-                log.write('Sending line...\n')
-                if window == target:
-                    line = '{} {} :{}'.format(self.types[mtype], window, message)
-                else:
-                    line = '{} {} :{}: {}'.format(self.types[mtype], window, target, message)
-                log.write(str(query) + '\n')
-                log.write('[{}]\n'.format(line))
-                query.PutIRC(line)
+                query = query.FindNetwork(network)
+                if query is not None:
+                    if window == target:
+                        line = '{} {} :{}'.format(self.types[mtype], window, message)
+                    else:
+                        line = '{} {} :{}: {}'.format(self.types[mtype], window, target, message)
+                    query.PutIRC(line)
 
     def put_log(self, mtype, line, window="Status", nick=None):
         """
@@ -435,8 +415,6 @@ class zlog_sql(znc.Module):
             'message': line.encode('utf8', 'replace').decode('utf8')})
         if not self.reply_queue.empty():
             line = self.reply_queue.get()
-            with self.internal_log.error() as target:
-                target.write('* {} *\n'.format(list(line)))
             self.put_irc(line[1], line[2], line[3], line[4], line[5], line[6])
 
 
@@ -514,13 +492,10 @@ class DatabaseThread:
                 db.ensure_connected()
                 db.insert_into(item, 'logs')
                 res = db.fetch_from()
-                with internal_log.error() as target:
-                    target.write('== ' + str(res) + ' ==\n')
-                    if res:
-                        for line in res:
-                            target.write(str(line) + '\n')
-                            inbound_queue.put(line)
-                            db.del_from(line[0])
+                if res:
+                    for line in res:
+                        inbound_queue.put(line)
+                        db.del_from(line[0])
             except Exception as e:
                 sleep_for = 10
 
