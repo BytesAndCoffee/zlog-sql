@@ -10,6 +10,13 @@ from time import sleep
 import znc
 
 
+class DispatchTimer(znc.Timer):
+    def RunJob(self):
+        if not self.queue.empty():
+            line = self.queue.get()
+            self.put_irc(line[1], line[2], line[3], line[4], line[5], line[6])
+
+
 class zlog_sql(znc.Module):
     description = 'Logs all channels to a MySQL database.'
     module_types = [znc.CModInfo.GlobalModule]
@@ -24,7 +31,16 @@ class zlog_sql(znc.Module):
     internal_log = None
     hook_debugging = False
 
-
+    def put_irc(self, user, network, window, mtype, target, message):
+        query = znc.CZNC.Get().FindUser(user)
+        if query is not None:
+            query = query.FindNetwork(network)
+            if query is not None:
+                if window == target:
+                    line = '{} {} :{}'.format(self.types[mtype], window, message)
+                else:
+                    line = '{} {} :{}: {}'.format(self.types[mtype], window, target, message)
+                query.PutIRC(line)
 
     def OnLoad(self, args, message):
         """
@@ -36,20 +52,33 @@ class zlog_sql(znc.Module):
         :param message: A message that may be displayed to the user after loading the module.
         :return: True if the module loaded successfully, else False.
         """
-        self.lookup = dict()
         self.types = {'msg': 'PRIVMSG', 'action': 'ACTION'}
         self.internal_log = InternalLog(self.GetSavePath())
         self.debug_hook()
 
         try:
             db = self.parse_args(args)
-            multiprocessing.Process(target=DatabaseThread.worker_safe,
-                                    args=(
-                                        db,
-                                        self.log_queue,
-                                        self.reply_queue,
-                                        self.internal_log
-                                    )).start()
+            multiprocessing.Process(
+                target=DatabaseThread.worker_safe,
+                args=(
+                    db,
+                    self.log_queue,
+                    self.internal_log
+                )
+            ).start()
+            self.isDone = multiprocessing.Value('i', 0)
+            multiprocessing.Process(
+                target=DatabaseThread.poll_safe,
+                args=(
+                    db,
+                    self.reply_queue,
+                    self.isDone,
+                    self.internal_log
+                )
+            ).start()
+            timer = self.CreateTimer(DispatchTimer, interval=5, cycles=0, description='Message dispatch timer')
+            timer.queue = self.reply_queue
+            timer.put_irc = self.put_irc
             return True
         except Exception as e:
             message.s = str(e)
@@ -62,8 +91,9 @@ class zlog_sql(znc.Module):
             return False
 
     def OnShutdown(self):
-        # Terminate worker process.
+        # Terminate worker processes.
         self.log_queue.put(None)
+        self.isDone.value = 1
 
     def GetServer(self):
         pServer = self.GetNetwork().GetCurrentServer()
@@ -389,18 +419,6 @@ class zlog_sql(znc.Module):
     # LOGGING
     # =======
 
-    def put_irc(self, user, network, window, mtype, target, message):
-        with self.internal_log.error() as log:
-            query = znc.CZNC.Get().FindUser(user)
-            if query is not None:
-                query = query.FindNetwork(network)
-                if query is not None:
-                    if window == target:
-                        line = '{} {} :{}'.format(self.types[mtype], window, message)
-                    else:
-                        line = '{} {} :{}: {}'.format(self.types[mtype], window, target, message)
-                    query.PutIRC(line)
-
     def put_log(self, mtype, line, window="Status", nick=None):
         """
         Adds the log line to database write queue.
@@ -413,10 +431,6 @@ class zlog_sql(znc.Module):
             'type': mtype,
             'nick': nick,
             'message': line.encode('utf8', 'replace').decode('utf8')})
-        if not self.reply_queue.empty():
-            line = self.reply_queue.get()
-            self.put_irc(line[1], line[2], line[3], line[4], line[5], line[6])
-
 
     # DEBUGGING HOOKS
     # ===============
@@ -462,11 +476,10 @@ class DatabaseThread:
     def worker_safe(
             db,
             log_queue: multiprocessing.SimpleQueue,
-            inbound_queue: multiprocessing.SimpleQueue,
             internal_log
     ) -> None:
         try:
-            DatabaseThread.worker(db, log_queue, inbound_queue, internal_log)
+            DatabaseThread.worker(db, log_queue, internal_log)
         except Exception as e:
             with internal_log.error() as target:
                 target.write('Unrecoverable exception in worker thread: {0} {1}\n'.format(type(e), str(e)))
@@ -478,7 +491,6 @@ class DatabaseThread:
     def worker(
             db,
             log_queue: multiprocessing.SimpleQueue,
-            inbound_queue: multiprocessing.SimpleQueue,
             internal_log
     ) -> None:
         db.connect()
@@ -491,11 +503,6 @@ class DatabaseThread:
             try:
                 db.ensure_connected()
                 db.insert_into(item, 'logs')
-                res = db.fetch_from()
-                if res:
-                    for line in res:
-                        inbound_queue.put(line)
-                        db.del_from(line[0])
             except Exception as e:
                 sleep_for = 10
 
@@ -514,6 +521,58 @@ class DatabaseThread:
                 with internal_log.error() as target:
                     target.write('Retrying now.\n'.format(sleep_for))
                     log_queue.put(item)
+
+    @staticmethod
+    def poll_safe(
+            db,
+            inbound_queue: multiprocessing.SimpleQueue,
+            isDone: multiprocessing.Value,
+            internal_log
+    ) -> None:
+        try:
+            DatabaseThread.poll_worker(db, inbound_queue, isDone, internal_log)
+        except Exception as e:
+            with internal_log.error() as target:
+                target.write('Unrecoverable exception in worker thread: {0} {1}\n'.format(type(e), str(e)))
+                target.write('Stack trace: ' + traceback.format_exc())
+                target.write('\n')
+            raise
+
+    @staticmethod
+    def poll_worker(
+            db,
+            inbound_queue: multiprocessing.SimpleQueue,
+            isDone: multiprocessing.Value,
+            internal_log
+    ) -> None:
+        db.connect()
+
+        while True:
+            if isDone.value == 1:
+                break
+            sleep(5)
+            try:
+                db.ensure_connected()
+                res = db.fetch_from()
+                if res:
+                    for line in res:
+                        inbound_queue.put(line)
+                        db.del_from(line[0])
+            except Exception as e:
+                sleep_for = 10
+
+                with internal_log.error() as target:
+                    target.write('Could not read from database caused by: {0} {1}\n'.format(type(e), str(e)))
+                    if 'open' in dir(db.conn):
+                        target.write('Database handle state: {}\n'.format(db.conn.open))
+                    target.write('Stack trace: ' + traceback.format_exc())
+                    target.write('\n\n')
+                    target.write('Retry in {} s\n'.format(sleep_for))
+
+                sleep(sleep_for)
+
+                with internal_log.error() as target:
+                    target.write('Retrying now.\n'.format(sleep_for))
 
 
 class InternalLog:
@@ -561,6 +620,7 @@ class MySQLDatabase(Database):
         cur = self.conn.cursor()
         cur.execute(sql)
         res = cur.fetchall()
+        self.conn.commit()
         return res
 
     def del_from(self, iden):
