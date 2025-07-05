@@ -69,16 +69,21 @@ class zlog_sql(znc.Module):
 
         try:
             db = self.parse_args(args)
-            multiprocessing.Process(
+            self.processes = []
+
+            worker = multiprocessing.Process(
                 target=DatabaseThread.worker_safe,
                 args=(
                     db,
                     self.log_queue,
                     self.internal_log
                 )
-            ).start()
+            )
+            worker.start()
+            self.processes.append(worker)
+
             self.isDone = multiprocessing.Value('i', 0)
-            multiprocessing.Process(
+            poller = multiprocessing.Process(
                 target=DatabaseThread.poll_safe,
                 args=(
                     db,
@@ -86,7 +91,9 @@ class zlog_sql(znc.Module):
                     self.isDone,
                     self.internal_log
                 )
-            ).start()
+            )
+            poller.start()
+            self.processes.append(poller)
             timer = self.CreateTimer(DispatchTimer, interval=5, cycles=0, description='Message dispatch timer')
             timer.queue = self.reply_queue
             timer.put_irc = self.put_irc
@@ -105,6 +112,8 @@ class zlog_sql(znc.Module):
         # Terminate worker processes.
         self.log_queue.put(None)
         self.isDone.value = 1
+        for proc in getattr(self, 'processes', []):
+            proc.join()
 
     def GetServer(self):
         pServer = self.GetNetwork().GetCurrentServer()
