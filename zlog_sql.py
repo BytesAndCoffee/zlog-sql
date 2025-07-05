@@ -26,9 +26,6 @@ class zlog_sql(znc.Module):
     has_args = True
     args_help_text = 'Connection string in format: mysql://user:pass@host/database_name'
 
-    log_queue = multiprocessing.SimpleQueue()
-    reply_queue = multiprocessing.SimpleQueue()
-    internal_log = None
     hook_debugging = False
 
     def put_irc(self, user, network, window, mtype, target, message):
@@ -53,6 +50,8 @@ class zlog_sql(znc.Module):
         :return: True if the module loaded successfully, else False.
         """
         self.types = {'msg': 'PRIVMSG', 'action': 'ACTION'}
+        self.log_queue = multiprocessing.SimpleQueue()
+        self.reply_queue = multiprocessing.SimpleQueue()
         self.internal_log = InternalLog(self.GetSavePath())
         self.debug_hook()
 
