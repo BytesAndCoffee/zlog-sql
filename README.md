@@ -14,6 +14,13 @@ After having this plugin enabled for around 11 months, below are my statistics o
 
 MySQL gives great compression ratio and is easily searchable.
 
+## Installation
+Install the Python dependencies with:
+
+```bash
+pip install -r requirements.txt
+```
+
 ## Quick start
 1. Copy `zlog_sql.py` to `~/.znc/modules/zlog_sql.py`.
 2. In Webadmin, open the list of Global Modules.
