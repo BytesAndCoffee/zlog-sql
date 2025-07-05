@@ -1,6 +1,7 @@
 import inspect
 import json
 import multiprocessing
+import queue
 import os
 import pprint
 import re
@@ -12,9 +13,20 @@ import znc
 
 class DispatchTimer(znc.Timer):
     def RunJob(self):
-        if not self.queue.empty():
-            line = self.queue.get()
-            self.put_irc(line[1], line[2], line[3], line[4], line[5], line[6])
+        while True:
+            try:
+                line = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                self.put_irc(
+                    line[1],
+                    line[2],
+                    line[3],
+                    line[4],
+                    line[5],
+                    line[6],
+                )
 
 
 class zlog_sql(znc.Module):
