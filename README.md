@@ -7,6 +7,21 @@ MySQL/SQLite logging plugin for ZNC IRC bouncer written in Python 3
 * Automatic table creation (`CREATE TABLE IF NOT EXIST`)
 * Retry after failed inserts. When database server is offline, logs are buffered to memory. They are saved when database is back online, so you won't lose logs during MySQL/PostgreSQL outages. 
 
+## Installation
+
+Install the module using `pip`:
+
+```bash
+pip install zlog-sql
+```
+
+If you are working from a clone of this repository, install it in-place:
+
+```bash
+pip install .
+```
+
+
 ## Some statistics
 After having this plugin enabled for around 11 months, below are my statistics of MySQL table:
 * Total logs count: more than 4.87 million.
