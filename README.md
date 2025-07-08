@@ -15,6 +15,12 @@ Install the module using `pip`:
 pip install zlog-sql
 ```
 
+If you need MySQL support, install with the optional `mysql` extra:
+
+```bash
+pip install "zlog-sql[mysql]"
+```
+
 If you are working from a clone of this repository, install it in-place:
 
 ```bash
@@ -45,11 +51,16 @@ pip install -r requirements.txt
 ![Screenshot](docs/webadmin_modules.png)
 
 ### MySQL
-For MySQL, set module argument matching following format:
+For MySQL, set module argument using the following format:
 ```
 mysql://username:password@localhost/database_name
 ```
-**Important:** you need [`PyMySQL`](https://github.com/PyMySQL/PyMySQL) pip package for MySQL logging. Install it with `pip3 install PyMySQL` command.
+**Important:** MySQL functionality requires the optional `mysql` extra.
+Install the package with:
+
+```bash
+pip install "zlog-sql[mysql]"
+```
 
 ### SQLite buffer
 To log locally and automatically sync every 5 seconds, use a connection string like:
