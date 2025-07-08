@@ -572,7 +572,7 @@ class DatabaseThread:
                 sleep(sleep_for)
 
                 with internal_log.error() as target:
-                    target.write('Retrying now.\n'.format(sleep_for))
+                    target.write('Retrying now.\n')
                     log_queue.put(item)
 
     @staticmethod
@@ -625,7 +625,7 @@ class DatabaseThread:
                 sleep(sleep_for)
 
                 with internal_log.error() as target:
-                    target.write('Retrying now.\n'.format(sleep_for))
+                    target.write('Retrying now.\n')
 
     @staticmethod
     def sync_safe(
@@ -679,7 +679,7 @@ class DatabaseThread:
                 sleep(sleep_for)
 
                 with internal_log.error() as target:
-                    target.write('Retrying now.\n'.format(sleep_for))
+                    target.write('Retrying now.\n')
 
 
 class InternalLog:
