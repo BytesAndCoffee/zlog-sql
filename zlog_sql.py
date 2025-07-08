@@ -663,7 +663,7 @@ class DatabaseThread:
                 rows = local_db.fetch_logs()
                 if rows:
                     for row in rows:
-                        remote_db.insert_into(row, 'logs')
+                        remote_db.insert_into(dict(row), 'logs')
                         local_db.del_log(row['id'])
             except Exception as e:
                 sleep_for = 10
