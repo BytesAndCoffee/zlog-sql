@@ -59,7 +59,7 @@ class zlog_sql(znc.Module):
         """
         This module hook is called when a module is loaded.
         :type args: const CString &
-        :type args: CString &
+        :type message: CString &
         :rtype: bool
         :param args: The arguments for the modules.
         :param message: A message that may be displayed to the user after loading the module.
