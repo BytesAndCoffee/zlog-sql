@@ -30,13 +30,17 @@ class DispatchTimer(znc.Timer):
 
 
 class zlog_sql(znc.Module):
-    description = 'Logs all channels to a MySQL database.'
+    description = 'Logs all channels to a MySQL or SQLite database.'
     module_types = [znc.CModInfo.GlobalModule]
 
     wiki_page = 'ZLog_SQL'
 
     has_args = True
-    args_help_text = 'Connection string in format: mysql://user:pass@host/database_name'
+    args_help_text = (
+        'Connection string in format: '\
+        'mysql://user:pass@host/database_name or '
+        'sqlite:///local.db;mysql://user:pass@host/db'
+    )
 
     hook_debugging = False
 
@@ -68,7 +72,11 @@ class zlog_sql(znc.Module):
         self.debug_hook()
 
         try:
-            db = self.parse_args(args)
+            parsed = self.parse_args(args)
+            if isinstance(parsed, tuple):
+                db, remote_db = parsed
+            else:
+                db, remote_db = parsed, None
             self.processes = []
 
             worker = multiprocessing.Process(
@@ -94,6 +102,18 @@ class zlog_sql(znc.Module):
             )
             poller.start()
             self.processes.append(poller)
+            if remote_db is not None:
+                syncer = multiprocessing.Process(
+                    target=DatabaseThread.sync_safe,
+                    args=(
+                        db,
+                        remote_db,
+                        self.isDone,
+                        self.internal_log
+                    )
+                )
+                syncer.start()
+                self.processes.append(syncer)
             timer = self.CreateTimer(DispatchTimer, interval=5, cycles=0, description='Message dispatch timer')
             timer.queue = self.reply_queue
             timer.put_irc = self.put_irc
@@ -481,12 +501,25 @@ class zlog_sql(znc.Module):
         if args.strip() == '':
             raise Exception('Missing argument. Provide connection string as an argument.')
 
+        match = re.search('^\s*sqlite:///(.+);mysql://(.+?):(.+?)@(.+?)/(.+)\s*$', args)
+        if match:
+            local = SQLiteDatabase({'path': match.group(1)})
+            remote = MySQLDatabase({'host': match.group(4),
+                                   'user': match.group(2),
+                                   'passwd': match.group(3),
+                                   'db': match.group(5)})
+            return local, remote
+
         match = re.search('^\s*mysql://(.+?):(.+?)@(.+?)/(.+)\s*$', args)
         if match:
             return MySQLDatabase({'host': match.group(3),
                                   'user': match.group(1),
                                   'passwd': match.group(2),
                                   'db': match.group(4)})
+
+        match = re.search('^\s*sqlite:///(.+)\s*$', args)
+        if match:
+            return SQLiteDatabase({'path': match.group(1)})
 
         raise Exception('Unrecognized connection string. Check the documentation.')
 
@@ -594,6 +627,60 @@ class DatabaseThread:
                 with internal_log.error() as target:
                     target.write('Retrying now.\n'.format(sleep_for))
 
+    @staticmethod
+    def sync_safe(
+            local_db,
+            remote_db,
+            isDone: multiprocessing.Value,
+            internal_log
+    ) -> None:
+        try:
+            DatabaseThread.sync_worker(local_db, remote_db, isDone, internal_log)
+        except Exception as e:
+            with internal_log.error() as target:
+                target.write('Unrecoverable exception in worker thread: {0} {1}\n'.format(type(e), str(e)))
+                target.write('Stack trace: ' + traceback.format_exc())
+                target.write('\n')
+            raise
+
+    @staticmethod
+    def sync_worker(
+            local_db,
+            remote_db,
+            isDone: multiprocessing.Value,
+            internal_log
+    ) -> None:
+        local_db.connect()
+        remote_db.connect()
+
+        while True:
+            if isDone.value == 1:
+                break
+            sleep(5)
+            try:
+                local_db.ensure_connected()
+                remote_db.ensure_connected()
+                rows = local_db.fetch_logs()
+                if rows:
+                    for row in rows:
+                        remote_db.insert_into(row, 'logs')
+                        local_db.del_log(row['id'])
+            except Exception as e:
+                sleep_for = 10
+
+                with internal_log.error() as target:
+                    target.write('Could not sync database caused by: {0} {1}\n'.format(type(e), str(e)))
+                    if 'open' in dir(remote_db.conn):
+                        target.write('Remote DB handle state: {}\n'.format(remote_db.conn.open))
+                    target.write('Stack trace: ' + traceback.format_exc())
+                    target.write('\n\n')
+                    target.write('Retry in {} s\n'.format(sleep_for))
+
+                sleep(sleep_for)
+
+                with internal_log.error() as target:
+                    target.write('Retrying now.\n'.format(sleep_for))
+
 
 class InternalLog:
     def __init__(self, save_path: str):
@@ -646,4 +733,68 @@ class MySQLDatabase(Database):
     def del_from(self, iden):
         sql = 'DELETE FROM inbound WHERE id = {}'.format(iden)
         self.conn.cursor().execute(sql)
+        self.conn.commit()
+
+    def fetch_logs(self):
+        import pymysql
+        sql = 'SELECT * FROM logs'
+        cur = self.conn.cursor(pymysql.cursors.DictCursor)
+        cur.execute(sql)
+        res = cur.fetchall()
+        self.conn.commit()
+        return res
+
+    def del_log(self, iden):
+        sql = 'DELETE FROM logs WHERE id = {}'.format(iden)
+        self.conn.cursor().execute(sql)
+        self.conn.commit()
+
+
+class SQLiteDatabase(Database):
+    def connect(self) -> None:
+        import sqlite3
+        path = self.dsn['path']
+        self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS logs ('
+            'id INTEGER PRIMARY KEY AUTOINCREMENT,'
+            'created_at TEXT, user TEXT, network TEXT, window TEXT,'
+            'type TEXT, nick TEXT, message TEXT)'
+        )
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS inbound ('
+            'id INTEGER PRIMARY KEY AUTOINCREMENT,'
+            'user TEXT, network TEXT, window TEXT, type TEXT,'
+            'nick TEXT, message TEXT)'
+        )
+        self.conn.commit()
+
+    def ensure_connected(self):
+        if self.conn is None:
+            self.connect()
+
+    def insert_into(self, row, table="logs"):
+        cols = ', '.join('`{}`'.format(col) for col in row.keys())
+        placeholders = ', '.join('?' for _ in row.keys())
+        sql = 'INSERT INTO {} ({}) VALUES ({})'.format(table, cols, placeholders)
+        values = [row[c] for c in row.keys()]
+        self.conn.execute(sql, values)
+        self.conn.commit()
+
+    def fetch_from(self):
+        cur = self.conn.execute('SELECT rowid as id, * FROM inbound')
+        res = cur.fetchall()
+        return res
+
+    def del_from(self, iden):
+        self.conn.execute('DELETE FROM inbound WHERE rowid=?', (iden,))
+        self.conn.commit()
+
+    def fetch_logs(self):
+        cur = self.conn.execute('SELECT rowid as id, * FROM logs')
+        return cur.fetchall()
+
+    def del_log(self, iden):
+        self.conn.execute('DELETE FROM logs WHERE rowid=?', (iden,))
         self.conn.commit()
