@@ -1,8 +1,8 @@
 # zlog-sql
-MySQL logging plugin for ZNC IRC bouncer written in Python 3. The current version supports only MySQL databases.
+MySQL logging plugin for ZNC IRC bouncer written in Python 3. It now supports logging to a local SQLite (libSQL) database which can be synced to MySQL/PlanetScale.
 
 ## Features
-* Supports MySQL database only.
+* Supports MySQL or a local SQLite buffer.
 * Asynchronous database writes on separate thread. Guarantees that ZNC won't hang during SQL connection timeout.
 * Automatic table creation (`CREATE TABLE IF NOT EXIST`)
 * Retry after failed inserts. When the database server is offline, logs are buffered to memory. They are saved when the database is back online, so you won't lose logs during MySQL outages.
@@ -50,5 +50,13 @@ For MySQL, set module argument matching following format:
 mysql://username:password@localhost/database_name
 ```
 **Important:** you need [`PyMySQL`](https://github.com/PyMySQL/PyMySQL) pip package for MySQL logging. Install it with `pip3 install PyMySQL` command.
+
+### SQLite buffer
+To log locally and automatically sync every 5 seconds, use a connection string like:
+```
+sqlite:///path/to/local.db;mysql://user:pass@host/db
+```
+The module will spawn a subprocess that pushes buffered rows from the local SQLite
+file to the remote MySQL instance on a 5 second interval.
 
 5. Save changes. SQL table schema is going to be created automatically.
