@@ -9,22 +9,13 @@ MySQL logging plugin for ZNC IRC bouncer written in Python 3. It now supports lo
 
 ## Installation
 
-Install the module using `pip`:
+Clone this repository and copy `zlog_sql.py` to your ZNC modules directory
+(usually `~/.znc/modules/`).
+
+If you require MySQL support, install the `PyMySQL` dependency separately:
 
 ```bash
-pip install zlog-sql
-```
-
-If you need MySQL support, install with the optional `mysql` extra:
-
-```bash
-pip install "zlog-sql[mysql]"
-```
-
-If you are working from a clone of this repository, install it in-place:
-
-```bash
-pip install .
+pip install PyMySQL
 ```
 
 
@@ -55,11 +46,11 @@ For MySQL, set module argument using the following format:
 ```
 mysql://username:password@localhost/database_name
 ```
-**Important:** MySQL functionality requires the optional `mysql` extra.
-Install the package with:
+**Important:** MySQL functionality requires the `PyMySQL` package. Install it
+with:
 
 ```bash
-pip install "zlog-sql[mysql]"
+pip install PyMySQL
 ```
 
 ### SQLite buffer
