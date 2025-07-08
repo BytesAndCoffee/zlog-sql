@@ -39,7 +39,7 @@ class zlog_sql(znc.Module):
     args_help_text = (
         'Connection string in format: '\
         'mysql://user:pass@host/database_name or '
-        'sqlite:///local.db;mysql://user:pass@host/db'
+        'sqlite:///local.db;mysql://user:pass@host/db (SQLite path optional)'
     )
 
     hook_debugging = False
@@ -512,10 +512,15 @@ class zlog_sql(znc.Module):
 
         match = re.search('^\s*mysql://(.+?):(.+?)@(.+?)/(.+)\s*$', args)
         if match:
-            return MySQLDatabase({'host': match.group(3),
-                                  'user': match.group(1),
-                                  'passwd': match.group(2),
-                                  'db': match.group(4)})
+            buffer_path = os.path.join(self.GetSavePath(), 'buffer.db')
+            local = SQLiteDatabase({'path': buffer_path})
+            remote = MySQLDatabase({
+                'host': match.group(3),
+                'user': match.group(1),
+                'passwd': match.group(2),
+                'db': match.group(4)
+            })
+            return local, remote
 
         match = re.search('^\s*sqlite:///(.+)\s*$', args)
         if match:

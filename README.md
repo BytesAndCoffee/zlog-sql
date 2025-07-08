@@ -2,7 +2,7 @@
 MySQL logging plugin for ZNC IRC bouncer written in Python 3. It now supports logging to a local SQLite (libSQL) database which can be synced to MySQL/PlanetScale.
 
 ## Features
-* Supports MySQL or a local SQLite buffer.
+* Supports MySQL with an automatic local SQLite buffer or standalone SQLite.
 * Asynchronous database writes on separate thread. Guarantees that ZNC won't hang during SQL connection timeout.
 * Automatic table creation (`CREATE TABLE IF NOT EXISTS`)
 * Retry after failed inserts. When the database server is offline, logs are buffered to memory. They are saved when the database is back online, so you won't lose logs during MySQL outages.
@@ -54,11 +54,14 @@ pip install PyMySQL
 ```
 
 ### SQLite buffer
-To log locally and automatically sync every 5 seconds, use a connection string like:
+When you specify a MySQL connection string the module will automatically create a
+local buffer file named `buffer.db` inside the module's data directory and sync it
+to MySQL every 5 seconds.
+If you want to override the buffer location, use a connection string like:
 ```
 sqlite:///path/to/local.db;mysql://user:pass@host/db
 ```
-The module will spawn a subprocess that pushes buffered rows from the local SQLite
-file to the remote MySQL instance on a 5 second interval.
+The module spawns a subprocess that pushes buffered rows from the local SQLite file
+to the remote MySQL instance on a 5 second interval.
 
 5. Save changes. SQL table schema is going to be created automatically.
