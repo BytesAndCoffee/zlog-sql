@@ -647,3 +647,41 @@ class MySQLDatabase(Database):
         sql = 'DELETE FROM inbound WHERE id = {}'.format(iden)
         self.conn.cursor().execute(sql)
         self.conn.commit()
+
+
+class SQLiteDatabase(Database):
+    def connect(self) -> None:
+        import sqlite3
+        self.conn = sqlite3.connect(**self.dsn)
+
+    def ensure_connected(self):
+        pass
+
+    def insert_into(self, row, table="logs"):
+        cols = ', '.join('[{}]'.format(col) for col in row.keys())
+        vals = ', '.join(':{}'.format(col) for col in row.keys())
+        sql = 'INSERT INTO [{}] ({}) VALUES ({})'.format(table, cols, vals)
+        self.conn.cursor().execute(sql, row)
+        self.conn.commit()
+
+    def fetch_from(self):
+        cur = self.conn.cursor()
+        cur.execute('SELECT * FROM inbound ORDER BY id')
+        res = cur.fetchall()
+        self.conn.commit()
+        return res
+
+    def fetch_logs(self):
+        cur = self.conn.cursor()
+        cur.execute('SELECT * FROM logs ORDER BY id')
+        res = cur.fetchall()
+        self.conn.commit()
+        return res
+
+    def del_from(self, iden):
+        self.conn.cursor().execute('DELETE FROM inbound WHERE id = ?', (iden,))
+        self.conn.commit()
+
+    def del_log(self, iden):
+        self.conn.cursor().execute('DELETE FROM logs WHERE id = ?', (iden,))
+        self.conn.commit()
