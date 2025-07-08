@@ -466,7 +466,7 @@ class zlog_sql(znc.Module):
         self.log_queue.put({
             'created_at': datetime.utcnow().isoformat(),
             'user': self.GetUser().GetUserName() if self.GetUser() is not None else None,
-            'network': self.GetNetwork().GetName() if self.GetUser() is not None else None,
+            'network': self.GetNetwork().GetName() if self.GetNetwork() is not None else None,
             'window': window,
             'type': mtype,
             'nick': nick,
