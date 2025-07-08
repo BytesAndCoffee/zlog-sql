@@ -4,7 +4,7 @@ MySQL logging plugin for ZNC IRC bouncer written in Python 3. It now supports lo
 ## Features
 * Supports MySQL or a local SQLite buffer.
 * Asynchronous database writes on separate thread. Guarantees that ZNC won't hang during SQL connection timeout.
-* Automatic table creation (`CREATE TABLE IF NOT EXIST`)
+* Automatic table creation (`CREATE TABLE IF NOT EXISTS`)
 * Retry after failed inserts. When the database server is offline, logs are buffered to memory. They are saved when the database is back online, so you won't lose logs during MySQL outages.
 
 ## Installation
@@ -29,7 +29,7 @@ After having this plugin enabled for around 11 months, below are my statistics o
 
 MySQL gives great compression ratio and is easily searchable.
 
-## Installation
+## Development setup
 Install the Python dependencies with:
 
 ```bash
