@@ -735,19 +735,6 @@ class MySQLDatabase(Database):
         self.conn.cursor().execute(sql)
         self.conn.commit()
 
-    def fetch_logs(self):
-        import pymysql
-        sql = 'SELECT * FROM logs'
-        cur = self.conn.cursor(pymysql.cursors.DictCursor)
-        cur.execute(sql)
-        res = cur.fetchall()
-        self.conn.commit()
-        return res
-
-    def del_log(self, iden):
-        sql = 'DELETE FROM logs WHERE id = {}'.format(iden)
-        self.conn.cursor().execute(sql)
-        self.conn.commit()
 
 
 class SQLiteDatabase(Database):
