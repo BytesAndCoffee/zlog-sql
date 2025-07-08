@@ -731,8 +731,8 @@ class MySQLDatabase(Database):
         return res
 
     def del_from(self, iden):
-        sql = 'DELETE FROM inbound WHERE id = {}'.format(iden)
-        self.conn.cursor().execute(sql)
+        sql = 'DELETE FROM inbound WHERE id = %s'
+        self.conn.cursor().execute(sql, (iden,))
         self.conn.commit()
 
 
