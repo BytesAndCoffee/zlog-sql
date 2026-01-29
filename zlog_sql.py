@@ -4,7 +4,6 @@ import multiprocessing
 import queue
 import os
 import pprint
-import re
 import traceback
 from datetime import datetime
 from time import sleep
@@ -30,17 +29,10 @@ class DispatchTimer(znc.Timer):
 
 
 class zlog_sql(znc.Module):
-    description = 'Logs all channels to a MySQL or SQLite database.'
+    description = "Logs all channels to a MySQL or SQLite database."
     module_types = [znc.CModInfo.GlobalModule]
 
-    wiki_page = 'ZLog_SQL'
-
-    has_args = True
-    args_help_text = (
-        'Connection string in format: '\
-        'mysql://user:pass@host/database_name or '
-        'sqlite:///local.db;mysql://user:pass@host/db (SQLite path optional)'
-    )
+    wiki_page = "ZLog_SQL"
 
     hook_debugging = False
 
@@ -50,71 +42,62 @@ class zlog_sql(znc.Module):
             query = query.FindNetwork(network)
             if query is not None:
                 if window == target:
-                    line = '{} {} :{}'.format(self.types[mtype], window, message)
+                    line = "{} {} :{}".format(self.types[mtype], window, message)
                 else:
-                    line = '{} {} :{}: {}'.format(self.types[mtype], window, target, message)
+                    line = "{} {} :{}: {}".format(
+                        self.types[mtype], window, target, message
+                    )
                 query.PutIRC(line)
 
     def OnLoad(self, args, message):
         """
         This module hook is called when a module is loaded.
-        :type args: const CString &
-        :type message: CString &
         :rtype: bool
         :param args: The arguments for the modules.
         :param message: A message that may be displayed to the user after loading the module.
         :return: True if the module loaded successfully, else False.
         """
-        self.types = {'msg': 'PRIVMSG', 'action': 'ACTION'}
+        self.types = {"msg": "PRIVMSG", "action": "ACTION"}
         self.log_queue = multiprocessing.SimpleQueue()
         self.reply_queue = multiprocessing.SimpleQueue()
         self.internal_log = InternalLog(self.GetSavePath())
+        self.internal_log.debug().write(
+            "Module loaded at: {} UTC\n".format(datetime.utcnow())
+        )
+        self.internal_log.debug().write("Path: {}\n".format(self.GetSavePath()))
         self.debug_hook()
 
         try:
-            parsed = self.parse_args(args)
-            if isinstance(parsed, tuple):
-                db, remote_db = parsed
-            else:
-                db, remote_db = parsed, None
+            remote_db = PlanetscaleDatabase(path=self.GetSavePath())
+            db = SQLiteDatabase(path=self.GetSavePath())
             self.processes = []
-
             worker = multiprocessing.Process(
-                target=DatabaseThread.worker_safe,
-                args=(
-                    db,
-                    self.log_queue,
-                    self.internal_log
-                )
+                target=DatabaseProcess.worker_safe,
+                args=(db, self.log_queue, self.internal_log),
             )
             worker.start()
             self.processes.append(worker)
 
-            self.isDone = multiprocessing.Value('i', 0)
+            self.isDone = multiprocessing.Value("i", 0)
             poller = multiprocessing.Process(
-                target=DatabaseThread.poll_safe,
-                args=(
-                    db,
-                    self.reply_queue,
-                    self.isDone,
-                    self.internal_log
-                )
+                target=DatabaseProcess.poll_safe,
+                args=(db, self.reply_queue, self.isDone, self.internal_log),
             )
             poller.start()
             self.processes.append(poller)
             if remote_db is not None:
                 syncer = multiprocessing.Process(
-                    target=DatabaseThread.sync_safe,
-                    args=(
-                        db,
-                        remote_db,
-                        self.isDone,
-                        self.internal_log
-                    )
+                    target=DatabaseProcess.sync_safe,
+                    args=(db, remote_db, self.isDone, self.internal_log),
                 )
                 syncer.start()
                 self.processes.append(syncer)
-            timer = self.CreateTimer(DispatchTimer, interval=5, cycles=0, description='Message dispatch timer')
+            timer = self.CreateTimer(
+                DispatchTimer,
+                interval=5,
+                cycles=0,
+                description="Message dispatch timer",
+            )
             timer.queue = self.reply_queue
             timer.put_irc = self.put_irc
             return True
@@ -122,9 +105,13 @@ class zlog_sql(znc.Module):
             message.s = str(e)
 
             with self.internal_log.error() as target:
-                target.write('Could not initialize module caused by: {} {}\n'.format(type(e), str(e)))
-                target.write('Stack trace: ' + traceback.format_exc())
-                target.write('\n')
+                target.write(
+                    "Could not initialize module caused by: {} {}\n".format(
+                        type(e), str(e)
+                    )
+                )
+                target.write("Stack trace: " + traceback.format_exc())
+                target.write("\n")
 
             return False
 
@@ -132,17 +119,17 @@ class zlog_sql(znc.Module):
         # Terminate worker processes.
         self.log_queue.put(None)
         self.isDone.value = 1
-        for proc in getattr(self, 'processes', []):
+        for proc in getattr(self, "processes", []):
             proc.join()
 
     def GetServer(self):
         pServer = self.GetNetwork().GetCurrentServer()
 
         if pServer is None:
-            return '(no server)'
+            return "(no server)"
 
-        sSSL = '+' if pServer.IsSSL() else ''
-        return pServer.GetName() + ' ' + sSSL + pServer.GetPort()
+        sSSL = "+" if pServer.IsSSL() else ""
+        return pServer.GetName() + " " + sSSL + pServer.GetPort()
 
     # GENERAL IRC EVENTS
     # ==================
@@ -153,7 +140,7 @@ class zlog_sql(znc.Module):
         :rtype: None
         """
         self.debug_hook()
-        self.put_log('connect', self.GetServer())
+        self.put_log("connect", self.GetServer())
 
     def OnIRCDisconnected(self):
         """
@@ -161,7 +148,7 @@ class zlog_sql(znc.Module):
         :rtype: None
         """
         self.debug_hook()
-        self.put_log('disconnect', self.GetServer())
+        self.put_log("disconnect", self.GetServer())
 
     def OnBroadcast(self, message):
         """
@@ -171,7 +158,7 @@ class zlog_sql(znc.Module):
         """
         self.debug_hook()
         self.put_log(
-            'broadcast',
+            "broadcast",
             str(message),
         )
         return znc.CONTINUE
@@ -187,12 +174,12 @@ class zlog_sql(znc.Module):
         :rtype: None
         """
         self.debug_hook()
-        sNick = opNick.GetNick() if opNick is not None else 'Server'
+        sNick = opNick.GetNick() if opNick is not None else "Server"
         self.put_log(
-            'rawmode',
-            sNick + ' sets mode: ' + modes + ' ' + args,
+            "rawmode",
+            sNick + " sets mode: " + modes + " " + args,
             channel.GetName(),
-            sNick
+            sNick,
         )
 
     def OnKick(self, opNick, kickedNick, channel, message):
@@ -206,10 +193,10 @@ class zlog_sql(znc.Module):
         """
         self.debug_hook()
         self.put_log(
-            'kick',
-            kickedNick + ' was kicked by ' + opNick.GetNick() + ' (' + message + ')',
+            "kick",
+            kickedNick + " was kicked by " + opNick.GetNick() + " (" + message + ")",
             channel.GetName(),
-            kickedNick
+            kickedNick,
         )
 
     def OnQuit(self, nick, message, channels):
@@ -223,10 +210,17 @@ class zlog_sql(znc.Module):
         self.debug_hook()
         for channel in channels:
             self.put_log(
-                'quit',
-                nick.GetNick() + ' (' + nick.GetIdent() + '@' + nick.GetHost() + ') (' + message + ')',
-                channel.GetName(),
+                "quit",
                 nick.GetNick()
+                + " ("
+                + nick.GetIdent()
+                + "@"
+                + nick.GetHost()
+                + ") ("
+                + message
+                + ")",
+                channel.GetName(),
+                nick.GetNick(),
             )
 
     def OnJoin(self, nick, channel):
@@ -238,10 +232,10 @@ class zlog_sql(znc.Module):
         """
         self.debug_hook()
         self.put_log(
-            'join',
-            nick.GetNick() + ' (' + nick.GetIdent() + '@' + nick.GetHost() + ')',
+            "join",
+            nick.GetNick() + " (" + nick.GetIdent() + "@" + nick.GetHost() + ")",
             channel.GetName(),
-            nick.GetNick()
+            nick.GetNick(),
         )
 
     def OnPart(self, nick, channel, message):
@@ -254,10 +248,17 @@ class zlog_sql(znc.Module):
         """
         self.debug_hook()
         self.put_log(
-            'part',
-            nick.GetNick() + ' (' + nick.GetIdent() + '@' + nick.GetHost() + ') (' + message + ')',
-            channel.GetName(),
+            "part",
             nick.GetNick()
+            + " ("
+            + nick.GetIdent()
+            + "@"
+            + nick.GetHost()
+            + ") ("
+            + message
+            + ")",
+            channel.GetName(),
+            nick.GetNick(),
         )
 
     def OnNick(self, oldNick, newNick, channels):
@@ -271,10 +272,10 @@ class zlog_sql(znc.Module):
         self.debug_hook()
         for channel in channels:
             self.put_log(
-                'nick',
-                oldNick.GetNick() + ' is now known as ' + newNick,
+                "nick",
+                oldNick.GetNick() + " is now known as " + newNick,
                 channel.GetName(),
-                oldNick.GetNick()
+                oldNick.GetNick(),
             )
 
     def OnTopic(self, nick, channel, topic):
@@ -286,12 +287,7 @@ class zlog_sql(znc.Module):
         :rtype: EModRet
         """
         self.debug_hook()
-        self.put_log(
-            'topic',
-            str(topic),
-            channel.GetName(),
-            nick.GetNick()
-        )
+        self.put_log("topic", str(topic), channel.GetName(), nick.GetNick())
         return znc.CONTINUE
 
     # NOTICES
@@ -307,12 +303,7 @@ class zlog_sql(znc.Module):
         self.debug_hook()
         network = self.GetNetwork()
         if network:
-            self.put_log(
-                'notice',
-                str(message),
-                str(target),
-                network.GetCurNick()
-            )
+            self.put_log("notice", str(message), str(target), network.GetCurNick())
         return znc.CONTINUE
 
     def OnPrivNotice(self, nick, message):
@@ -323,12 +314,7 @@ class zlog_sql(znc.Module):
         :rtype: EModRet
         """
         self.debug_hook()
-        self.put_log(
-            'notice',
-            str(message),
-            nick.GetNick(),
-            nick.GetNick()
-        )
+        self.put_log("notice", str(message), nick.GetNick(), nick.GetNick())
         return znc.CONTINUE
 
     def OnChanNotice(self, nick, channel, message):
@@ -340,12 +326,7 @@ class zlog_sql(znc.Module):
         :rtype: EModRet
         """
         self.debug_hook()
-        self.put_log(
-            'notice',
-            str(message),
-            channel.GetName(),
-            nick.GetNick()
-        )
+        self.put_log("notice", str(message), channel.GetName(), nick.GetNick())
         return znc.CONTINUE
 
     # ACTIONS
@@ -361,12 +342,7 @@ class zlog_sql(znc.Module):
         self.debug_hook()
         pNetwork = self.GetNetwork()
         if pNetwork:
-            self.put_log(
-                'action',
-                str(message),
-                str(target),
-                pNetwork.GetCurNick()
-            )
+            self.put_log("action", str(message), str(target), pNetwork.GetCurNick())
         return znc.CONTINUE
 
     def OnPrivAction(self, nick, message):
@@ -377,12 +353,7 @@ class zlog_sql(znc.Module):
         :rtype: EModRet
         """
         self.debug_hook()
-        self.put_log(
-            'action',
-            str(message),
-            nick.GetNick(),
-            nick.GetNick()
-        )
+        self.put_log("action", str(message), nick.GetNick(), nick.GetNick())
         return znc.CONTINUE
 
     def OnChanAction(self, nick, channel, message):
@@ -394,12 +365,7 @@ class zlog_sql(znc.Module):
         :rtype: EModRet
         """
         self.debug_hook()
-        self.put_log(
-            'action',
-            str(message),
-            channel.GetName(),
-            nick.GetNick()
-        )
+        self.put_log("action", str(message), channel.GetName(), nick.GetNick())
         return znc.CONTINUE
 
     # MESSAGES
@@ -415,12 +381,7 @@ class zlog_sql(znc.Module):
         self.debug_hook()
         network = self.GetNetwork()
         if network:
-            self.put_log(
-                'msg',
-                str(message),
-                str(target),
-                network.GetCurNick()
-            )
+            self.put_log("msg", str(message), str(target), network.GetCurNick())
         return znc.CONTINUE
 
     def OnPrivMsg(self, nick, message):
@@ -431,12 +392,7 @@ class zlog_sql(znc.Module):
         :rtype: EModRet
         """
         self.debug_hook()
-        self.put_log(
-            'msg',
-            str(message),
-            nick.GetNick(),
-            nick.GetNick()
-        )
+        self.put_log("msg", str(message), nick.GetNick(), nick.GetNick())
         return znc.CONTINUE
 
     def OnChanMsg(self, nick, channel, message):
@@ -448,12 +404,7 @@ class zlog_sql(znc.Module):
         :rtype: EModRet
         """
         self.debug_hook()
-        self.put_log(
-            'msg',
-            str(message),
-            channel.GetName(),
-            nick.GetNick()
-        )
+        self.put_log("msg", str(message), channel.GetName(), nick.GetNick())
         return znc.CONTINUE
 
     # LOGGING
@@ -463,14 +414,23 @@ class zlog_sql(znc.Module):
         """
         Adds the log line to database write queue.
         """
-        self.log_queue.put({
-            'created_at': datetime.utcnow().isoformat(),
-            'user': self.GetUser().GetUserName() if self.GetUser() is not None else None,
-            'network': self.GetNetwork().GetName() if self.GetNetwork() is not None else None,
-            'window': window,
-            'type': mtype,
-            'nick': nick,
-            'message': line.encode('utf8', 'replace').decode('utf8')})
+        self.log_queue.put(
+            {
+                "created_at": datetime.utcnow().isoformat(),
+                "user": (
+                    self.GetUser().GetUserName() if self.GetUser() is not None else None
+                ),
+                "network": (
+                    self.GetNetwork().GetName()
+                    if self.GetNetwork() is not None
+                    else None
+                ),
+                "window": window,
+                "type": mtype,
+                "nick": nick,
+                "message": line.encode("utf8", "replace").decode("utf8"),
+            }
+        )
 
     # DEBUGGING HOOKS
     # ===============
@@ -487,70 +447,34 @@ class zlog_sql(znc.Module):
         argvals = frameinfo.frame.f_locals
 
         with self.internal_log.debug() as target:
-            target.write('Called method: ' + frameinfo.function + '()\n')
+            target.write("Called method: " + frameinfo.function + "()\n")
             for argname in argvals:
-                if argname == 'self':
+                if argname == "self":
                     continue
-                target.write('    ' + argname + ' -> ' + pprint.pformat(argvals[argname]) + '\n')
-            target.write('\n')
-
-    # ARGUMENT PARSING
-    # ================
-
-    def parse_args(self, args):
-        if args.strip() == '':
-            raise Exception('Missing argument. Provide connection string as an argument.')
-
-        match = re.search('^\s*sqlite:///(.+);mysql://(.+?):(.+?)@(.+?)/(.+)\s*$', args)
-        if match:
-            local = SQLiteDatabase({'path': match.group(1)})
-            remote = MySQLDatabase({'host': match.group(4),
-                                   'user': match.group(2),
-                                   'passwd': match.group(3),
-                                   'db': match.group(5)})
-            return local, remote
-
-        match = re.search('^\s*mysql://(.+?):(.+?)@(.+?)/(.+)\s*$', args)
-        if match:
-            buffer_path = os.path.join(self.GetSavePath(), 'buffer.db')
-            local = SQLiteDatabase({'path': buffer_path})
-            remote = MySQLDatabase({
-                'host': match.group(3),
-                'user': match.group(1),
-                'passwd': match.group(2),
-                'db': match.group(4)
-            })
-            return local, remote
-
-        match = re.search('^\s*sqlite:///(.+)\s*$', args)
-        if match:
-            return SQLiteDatabase({'path': match.group(1)})
-
-        raise Exception('Unrecognized connection string. Check the documentation.')
+                target.write(
+                    "    " + argname + " -> " + pprint.pformat(argvals[argname]) + "\n"
+                )
+            target.write("\n")
 
 
-class DatabaseThread:
+class DatabaseProcess:
     @staticmethod
-    def worker_safe(
-            db,
-            log_queue: multiprocessing.SimpleQueue,
-            internal_log
-    ) -> None:
+    def worker_safe(db, log_queue: multiprocessing.SimpleQueue, internal_log) -> None:
         try:
-            DatabaseThread.worker(db, log_queue, internal_log)
+            DatabaseProcess.worker(db, log_queue, internal_log)
         except Exception as e:
             with internal_log.error() as target:
-                target.write('Unrecoverable exception in worker thread: {0} {1}\n'.format(type(e), str(e)))
-                target.write('Stack trace: ' + traceback.format_exc())
-                target.write('\n')
+                target.write(
+                    "Unrecoverable exception in worker Process: {0} {1}\n".format(
+                        type(e), str(e)
+                    )
+                )
+                target.write("Stack trace: " + traceback.format_exc())
+                target.write("\n")
             raise
 
     @staticmethod
-    def worker(
-            db,
-            log_queue: multiprocessing.SimpleQueue,
-            internal_log
-    ) -> None:
+    def worker(db, log_queue: multiprocessing.SimpleQueue, internal_log) -> None:
         db.connect()
 
         while True:
@@ -560,48 +484,56 @@ class DatabaseThread:
 
             try:
                 db.ensure_connected()
-                db.insert_into(item, 'logs')
+                db.insert_into(item, "logs")
             except Exception as e:
                 sleep_for = 10
 
                 with internal_log.error() as target:
-                    target.write('Could not save to database caused by: {0} {1}\n'.format(type(e), str(e)))
-                    if 'open' in dir(db.conn):
-                        target.write('Database handle state: {}\n'.format(db.conn.open))
-                    target.write('Stack trace: ' + traceback.format_exc())
-                    target.write('Current log: ')
+                    target.write(
+                        "Could not save to database caused by: {0} {1}\n".format(
+                            type(e), str(e)
+                        )
+                    )
+                    if "open" in dir(db.conn):
+                        target.write("Database handle state: {}\n".format(db.conn.open))
+                    target.write("Stack trace: " + traceback.format_exc())
+                    target.write("Current log: ")
                     json.dump(item, target)
-                    target.write('\n\n')
-                    target.write('Retry in {} s\n'.format(sleep_for))
+                    target.write("\n\n")
+                    target.write("Retry in {} s\n".format(sleep_for))
 
                 sleep(sleep_for)
 
                 with internal_log.error() as target:
-                    target.write('Retrying now.\n')
+                    target.write("Retrying now.\n")
                     log_queue.put(item)
 
     @staticmethod
     def poll_safe(
-            db,
-            inbound_queue: multiprocessing.SimpleQueue,
-            isDone: multiprocessing.Value,
-            internal_log
+        db,
+        inbound_queue: multiprocessing.SimpleQueue,
+        isDone: multiprocessing.Value,
+        internal_log,
     ) -> None:
         try:
-            DatabaseThread.poll_worker(db, inbound_queue, isDone, internal_log)
+            DatabaseProcess.poll_worker(db, inbound_queue, isDone, internal_log)
         except Exception as e:
             with internal_log.error() as target:
-                target.write('Unrecoverable exception in worker thread: {0} {1}\n'.format(type(e), str(e)))
-                target.write('Stack trace: ' + traceback.format_exc())
-                target.write('\n')
+                target.write(
+                    "Unrecoverable exception in worker Process: {0} {1}\n".format(
+                        type(e), str(e)
+                    )
+                )
+                target.write("Stack trace: " + traceback.format_exc())
+                target.write("\n")
             raise
 
     @staticmethod
     def poll_worker(
-            db,
-            inbound_queue: multiprocessing.SimpleQueue,
-            isDone: multiprocessing.Value,
-            internal_log
+        db,
+        inbound_queue: multiprocessing.SimpleQueue,
+        isDone: multiprocessing.Value,
+        internal_log,
     ) -> None:
         db.connect()
 
@@ -615,45 +547,47 @@ class DatabaseThread:
                 if res:
                     for line in res:
                         inbound_queue.put(line)
-                        db.del_from(line[0])
+                        db.del_from(line["id"])
             except Exception as e:
                 sleep_for = 10
 
                 with internal_log.error() as target:
-                    target.write('Could not read from database caused by: {0} {1}\n'.format(type(e), str(e)))
-                    if 'open' in dir(db.conn):
-                        target.write('Database handle state: {}\n'.format(db.conn.open))
-                    target.write('Stack trace: ' + traceback.format_exc())
-                    target.write('\n\n')
-                    target.write('Retry in {} s\n'.format(sleep_for))
+                    target.write(
+                        "Could not read from database caused by: {0} {1}\n".format(
+                            type(e), str(e)
+                        )
+                    )
+                    if "open" in dir(db.conn):
+                        target.write("Database handle state: {}\n".format(db.conn.open))
+                    target.write("Stack trace: " + traceback.format_exc())
+                    target.write("\n\n")
+                    target.write("Retry in {} s\n".format(sleep_for))
 
                 sleep(sleep_for)
 
                 with internal_log.error() as target:
-                    target.write('Retrying now.\n')
+                    target.write("Retrying now.\n")
 
     @staticmethod
     def sync_safe(
-            local_db,
-            remote_db,
-            isDone: multiprocessing.Value,
-            internal_log
+        local_db, remote_db, isDone: multiprocessing.Value, internal_log
     ) -> None:
         try:
-            DatabaseThread.sync_worker(local_db, remote_db, isDone, internal_log)
+            DatabaseProcess.sync_worker(local_db, remote_db, isDone, internal_log)
         except Exception as e:
             with internal_log.error() as target:
-                target.write('Unrecoverable exception in worker thread: {0} {1}\n'.format(type(e), str(e)))
-                target.write('Stack trace: ' + traceback.format_exc())
-                target.write('\n')
+                target.write(
+                    "Unrecoverable exception in worker Process: {0} {1}\n".format(
+                        type(e), str(e)
+                    )
+                )
+                target.write("Stack trace: " + traceback.format_exc())
+                target.write("\n")
             raise
 
     @staticmethod
     def sync_worker(
-            local_db,
-            remote_db,
-            isDone: multiprocessing.Value,
-            internal_log
+        local_db, remote_db, isDone: multiprocessing.Value, internal_log
     ) -> None:
         local_db.connect()
         remote_db.connect()
@@ -668,23 +602,32 @@ class DatabaseThread:
                 rows = local_db.fetch_logs()
                 if rows:
                     for row in rows:
-                        remote_db.insert_into(dict(row), 'logs')
-                        local_db.del_log(row['id'])
+                        payload = dict(row)
+                        payload.pop("id", None)
+
+                        remote_db.insert_into(payload, "logs")
+                        local_db.del_log(row["id"])
             except Exception as e:
                 sleep_for = 10
 
                 with internal_log.error() as target:
-                    target.write('Could not sync database caused by: {0} {1}\n'.format(type(e), str(e)))
-                    if 'open' in dir(remote_db.conn):
-                        target.write('Remote DB handle state: {}\n'.format(remote_db.conn.open))
-                    target.write('Stack trace: ' + traceback.format_exc())
-                    target.write('\n\n')
-                    target.write('Retry in {} s\n'.format(sleep_for))
+                    target.write(
+                        "Could not sync database caused by: {0} {1}\n".format(
+                            type(e), str(e)
+                        )
+                    )
+                    if "open" in dir(remote_db.conn):
+                        target.write(
+                            "Remote DB handle state: {}\n".format(remote_db.conn.open)
+                        )
+                    target.write("Stack trace: " + traceback.format_exc())
+                    target.write("\n\n")
+                    target.write("Retry in {} s\n".format(sleep_for))
 
                 sleep(sleep_for)
 
                 with internal_log.error() as target:
-                    target.write('Retrying now.\n')
+                    target.write("Retrying now.\n")
 
 
 class InternalLog:
@@ -692,43 +635,55 @@ class InternalLog:
         self.save_path = save_path
 
     def debug(self):
-        return self.open('debug')
+        return self.open("debug")
 
     def error(self):
-        return self.open('error')
+        return self.open("error")
 
     def open(self, level: str):
-        target = open(os.path.join(self.save_path, level + '.log'), 'a')
-        line = 'Log opened at: {} UTC\n'.format(datetime.utcnow())
+        target = open(os.path.join(self.save_path, level + ".log"), "a")
+        line = "Log opened at: {} UTC\n".format(datetime.utcnow())
         target.write(line)
-        target.write('=' * len(line) + '\n\n')
+        target.write("=" * len(line) + "\n\n")
         return target
 
 
 class Database:
-    def __init__(self, dsn: dict):
-        self.dsn = dsn
+    def __init__(self, path: str):
         self.conn = None
+        self.path = path
+        self.base_path = path
+        self.internal_log = InternalLog(path)
 
 
-class MySQLDatabase(Database):
+class PlanetscaleDatabase(Database):
     def connect(self) -> None:
         import pymysql
-        self.conn = pymysql.connect(use_unicode=True, charset='utf8mb4', **self.dsn)
+        from dotenv import load_dotenv
+
+        load_dotenv(dotenv_path=self.path + "/.env")
+        self.conn = pymysql.connect(
+            host=os.getenv("PS_HOST"),
+            user=os.getenv("PS_USERNAME"),
+            password=os.getenv("PS_PASSWORD"),
+            db=os.getenv("PS_NAME"),
+            autocommit=True,
+            ssl={"mode": "True"},
+        )
 
     def ensure_connected(self):
         if self.conn.open is False:
             self.connect()
 
     def insert_into(self, row, table="logs"):
-        cols = ', '.join('`{}`'.format(col) for col in row.keys())
-        vals = ', '.join('%({})s'.format(col) for col in row.keys())
-        sql = 'INSERT INTO `{}` ({}) VALUES ({})'.format(table, cols, vals)
+        cols = ", ".join("`{}`".format(col) for col in row.keys())
+        vals = ", ".join("%({})s".format(col) for col in row.keys())
+        sql = "INSERT INTO `{}` ({}) VALUES ({})".format(table, cols, vals)
         self.conn.cursor().execute(sql, row)
         self.conn.commit()
 
     def fetch_from(self):
-        sql = 'SELECT * FROM inbound'
+        sql = "SELECT * FROM inbound"
         cur = self.conn.cursor()
         cur.execute(sql)
         res = cur.fetchall()
@@ -736,30 +691,105 @@ class MySQLDatabase(Database):
         return res
 
     def del_from(self, iden):
-        sql = 'DELETE FROM inbound WHERE id = %s'
+        sql = "DELETE FROM inbound WHERE id = %s"
         self.conn.cursor().execute(sql, (iden,))
         self.conn.commit()
 
+
+# Deprecated, use PlanetscaleDatabase instead
+class MySQLDatabase(Database):
+    def connect(self) -> None:
+        self.internal_log.debug().write(
+            "Using MySQL database is deprecated, please use Planetscale\n"
+        )
+        import pymysql
+        from dotenv import load_dotenv
+
+        load_dotenv(dotenv_path=self.path + "/.env")
+        self.conn = pymysql.connect(
+            use_unicode=True,
+            charset="utf8mb4",
+            user=os.getenv("MYSQL_USER"),
+            password=os.getenv("MYSQL_PASSWORD"),
+            host=os.getenv("MYSQL_HOST"),
+            db=os.getenv("MYSQL_DATABASE"),
+            port=int(os.getenv("MYSQL_PORT")),
+            ssl={"mode": "True"},
+        )
+
+    def ensure_connected(self):
+        if self.conn.open is False:
+            self.connect()
+
+    def insert_into(self, row, table="logs"):
+        cols = ", ".join("`{}`".format(col) for col in row.keys())
+        vals = ", ".join("%({})s".format(col) for col in row.keys())
+        sql = "INSERT INTO `{}` ({}) VALUES ({})".format(table, cols, vals)
+        self.conn.cursor().execute(sql, row)
+        self.conn.commit()
+
+    def fetch_from(self):
+        sql = "SELECT * FROM inbound"
+        cur = self.conn.cursor()
+        cur.execute(sql)
+        res = cur.fetchall()
+        self.conn.commit()
+        return res
+
+    def del_from(self, iden):
+        sql = "DELETE FROM inbound WHERE id = %s"
+        self.conn.cursor().execute(sql, (iden,))
+        self.conn.commit()
 
 
 class SQLiteDatabase(Database):
     def connect(self) -> None:
         import sqlite3
-        path = self.dsn['path']
-        self.conn = sqlite3.connect(path)
+
+        # Ensure base directory exists
+        os.makedirs(self.base_path, exist_ok=True)
+
+        # Full path to buffer.sqlite
+        db_path = os.path.join(self.base_path, "buffer.sqlite")
+
+        # Connect (SQLite will create the file if it doesn't exist)
+        self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+
+        # Set pragmas for better performance
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+
+        # Create tables if they don't exist
         self.conn.execute(
-            'CREATE TABLE IF NOT EXISTS logs ('
-            'id INTEGER PRIMARY KEY AUTOINCREMENT,'
-            'created_at TEXT, user TEXT, network TEXT, window TEXT,'
-            'type TEXT, nick TEXT, message TEXT)'
+            """
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT,
+                user TEXT,
+                network TEXT,
+                window TEXT,
+                type TEXT,
+                nick TEXT,
+                message TEXT
+            )
+            """
         )
+
         self.conn.execute(
-            'CREATE TABLE IF NOT EXISTS inbound ('
-            'id INTEGER PRIMARY KEY AUTOINCREMENT,'
-            'user TEXT, network TEXT, window TEXT, type TEXT,'
-            'nick TEXT, message TEXT)'
+            """
+            CREATE TABLE IF NOT EXISTS inbound (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user TEXT,
+                network TEXT,
+                window TEXT,
+                type TEXT,
+                nick TEXT,
+                message TEXT
+            )
+            """
         )
+
         self.conn.commit()
 
     def ensure_connected(self):
@@ -767,26 +797,30 @@ class SQLiteDatabase(Database):
             self.connect()
 
     def insert_into(self, row, table="logs"):
-        cols = ', '.join('`{}`'.format(col) for col in row.keys())
-        placeholders = ', '.join('?' for _ in row.keys())
-        sql = 'INSERT INTO {} ({}) VALUES ({})'.format(table, cols, placeholders)
+        self.ensure_connected()
+        cols = ", ".join(f"`{col}`" for col in row.keys())
+        placeholders = ", ".join("?" for _ in row.keys())
+        sql = f"INSERT INTO {table} ({cols}) VALUES ({placeholders})"
         values = [row[c] for c in row.keys()]
         self.conn.execute(sql, values)
         self.conn.commit()
 
     def fetch_from(self):
-        cur = self.conn.execute('SELECT rowid as id, * FROM inbound')
-        res = cur.fetchall()
-        return res
+        self.ensure_connected()
+        cur = self.conn.execute("SELECT id, * FROM inbound")
+        return cur.fetchall()
 
     def del_from(self, iden):
-        self.conn.execute('DELETE FROM inbound WHERE rowid=?', (iden,))
+        self.ensure_connected()
+        self.conn.execute("DELETE FROM inbound WHERE id = ?", (iden,))
         self.conn.commit()
 
     def fetch_logs(self):
-        cur = self.conn.execute('SELECT rowid as id, * FROM logs')
+        self.ensure_connected()
+        cur = self.conn.execute("SELECT id, * FROM logs")
         return cur.fetchall()
 
     def del_log(self, iden):
-        self.conn.execute('DELETE FROM logs WHERE rowid=?', (iden,))
+        self.ensure_connected()
+        self.conn.execute("DELETE FROM logs WHERE id=?", (iden,))
         self.conn.commit()
