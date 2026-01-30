@@ -4,6 +4,7 @@ import multiprocessing
 import queue
 import os
 import pprint
+import pymysql
 import traceback
 from datetime import datetime
 from time import sleep
@@ -15,17 +16,21 @@ class DispatchTimer(znc.Timer):
         while True:
             try:
                 line = self.queue.get_nowait()
+                self.put_irc(
+                    line["user"],
+                    line["network"],
+                    line["window"],
+                    line["type"],
+                    line["nick"],
+                    line["message"],
+                )
             except queue.Empty:
                 break
-            else:
-                self.put_irc(
-                    line[1],
-                    line[2],
-                    line[3],
-                    line[4],
-                    line[5],
-                    line[6],
-                )
+            except Exception as e:
+                with self.internal_log.error() as log:
+                    log.write("DispatchTimer crash:\n")
+                    log.write(traceback.format_exc())
+                break
 
 
 class zlog_sql(znc.Module):
@@ -37,13 +42,22 @@ class zlog_sql(znc.Module):
     hook_debugging = False
 
     def put_irc(self, user, network, window, mtype, target, message):
+        self.internal_log.debug().write(
+            "Dispatching message to user: {} network: {} window: {} type: {} target: {} message: {}\n".format(
+                user, network, window, mtype, target, message
+            )
+        )
         query = znc.CZNC.Get().FindUser(user)
+        self.internal_log.debug().write("Found user: {}\n".format(query is not None))
         if query is not None:
             query = query.FindNetwork(network)
+            self.internal_log.debug().write("Found network: {}\n".format(query is not None))
             if query is not None:
                 if window == target:
+                    self.internal_log.debug().write("Target is window\n")
                     line = "{} {} :{}".format(self.types[mtype], window, message)
                 else:
+                    self.internal_log.debug().write("Target is different from window\n")
                     line = "{} {} :{}: {}".format(
                         self.types[mtype], window, target, message
                     )
@@ -58,8 +72,8 @@ class zlog_sql(znc.Module):
         :return: True if the module loaded successfully, else False.
         """
         self.types = {"msg": "PRIVMSG", "action": "ACTION"}
-        self.log_queue = multiprocessing.SimpleQueue()
-        self.reply_queue = multiprocessing.SimpleQueue()
+        self.log_queue = multiprocessing.Queue()
+        self.reply_queue = multiprocessing.Queue()
         self.internal_log = InternalLog(self.GetSavePath())
         self.internal_log.debug().write(
             "Module loaded at: {} UTC\n".format(datetime.utcnow())
@@ -81,7 +95,7 @@ class zlog_sql(znc.Module):
             self.isDone = multiprocessing.Value("i", 0)
             poller = multiprocessing.Process(
                 target=DatabaseProcess.poll_safe,
-                args=(db, self.reply_queue, self.isDone, self.internal_log),
+                args=(remote_db, self.reply_queue, self.isDone, self.internal_log),
             )
             poller.start()
             self.processes.append(poller)
@@ -98,6 +112,7 @@ class zlog_sql(znc.Module):
                 cycles=0,
                 description="Message dispatch timer",
             )
+            timer.internal_log = self.internal_log
             timer.queue = self.reply_queue
             timer.put_irc = self.put_irc
             return True
@@ -459,7 +474,7 @@ class zlog_sql(znc.Module):
 
 class DatabaseProcess:
     @staticmethod
-    def worker_safe(db, log_queue: multiprocessing.SimpleQueue, internal_log) -> None:
+    def worker_safe(db, log_queue: multiprocessing.Queue, internal_log) -> None:
         try:
             DatabaseProcess.worker(db, log_queue, internal_log)
         except Exception as e:
@@ -474,7 +489,7 @@ class DatabaseProcess:
             raise
 
     @staticmethod
-    def worker(db, log_queue: multiprocessing.SimpleQueue, internal_log) -> None:
+    def worker(db, log_queue: multiprocessing.Queue, internal_log) -> None:
         db.connect()
 
         while True:
@@ -511,7 +526,7 @@ class DatabaseProcess:
     @staticmethod
     def poll_safe(
         db,
-        inbound_queue: multiprocessing.SimpleQueue,
+        inbound_queue: multiprocessing.Queue,
         isDone: multiprocessing.Value,
         internal_log,
     ) -> None:
@@ -531,7 +546,7 @@ class DatabaseProcess:
     @staticmethod
     def poll_worker(
         db,
-        inbound_queue: multiprocessing.SimpleQueue,
+        inbound_queue: multiprocessing.Queue,
         isDone: multiprocessing.Value,
         internal_log,
     ) -> None:
@@ -545,9 +560,16 @@ class DatabaseProcess:
                 db.ensure_connected()
                 res = db.fetch_from()
                 if res:
-                    for line in res:
-                        inbound_queue.put(line)
-                        db.del_from(line["id"])
+                    for row in res:
+                        inbound_queue.put({
+                            "user": row["user"],
+                            "network": row["network"],
+                            "window": row["window"],
+                            "type": row["type"],
+                            "nick": row["nick"],
+                            "message": row["message"],
+                        })
+                        db.del_from(row["id"])
             except Exception as e:
                 sleep_for = 10
 
@@ -658,7 +680,6 @@ class Database:
 
 class PlanetscaleDatabase(Database):
     def connect(self) -> None:
-        import pymysql
         from dotenv import load_dotenv
 
         load_dotenv(dotenv_path=self.path + "/.env")
@@ -683,12 +704,20 @@ class PlanetscaleDatabase(Database):
         self.conn.commit()
 
     def fetch_from(self):
-        sql = "SELECT * FROM inbound"
-        cur = self.conn.cursor()
+        sql = """
+        SELECT
+            `id`,
+            `user`,
+            `network`,
+            `window`,
+            `type`,
+            `nick`,
+            `message`
+        FROM `inbound`
+        """
+        cur = self.conn.cursor(pymysql.cursors.DictCursor)
         cur.execute(sql)
-        res = cur.fetchall()
-        self.conn.commit()
-        return res
+        return cur.fetchall()
 
     def del_from(self, iden):
         sql = "DELETE FROM inbound WHERE id = %s"
